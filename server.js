@@ -2,7 +2,7 @@
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
-const Kahoot = require('@theusaf/kahoot.js-updated');
+const Kahoot = require('kahoot.js-updated');
 
 const app = express();
 app.use(express.static('.'));
