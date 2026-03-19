@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Kahoot Joiner</title>
+</head>
+<body>
+  <h1>Join Kahoot</h1>
+  <form id="joinForm">
+    <label>Game PIN: <input id="pin" required></label><br>
+    <label>Nickname: <input id="nick" required></label><br>
+    <button type="submit">Join</button>
+  </form>
+
+  <pre id="log"></pre>
+
+  <script>
+    const log = msg => {
+      document.getElementById('log').textContent += msg + '\n';
+    };
+
+    const ws = new WebSocket(`ws://${location.hostname}:3000`);
+    ws.onmessage = e => {
+      const data = JSON.parse(e.data);
+      log(JSON.stringify(data));
+    };
+
+    document.getElementById('joinForm').addEventListener('submit', e => {
+      e.preventDefault();
+      const pin = document.getElementById('pin').value;
+      const nick = document.getElementById('nick').value;
+      ws.send(JSON.stringify({ action: 'join', pin, nick }));
+      log('Sent join request');
+    });
+  </script>
+</body>
+</html>
