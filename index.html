@@ -19,7 +19,7 @@
       document.getElementById('log').textContent += msg + '\n';
     };
 
-    const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+ const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
     ws.onmessage = e => {
       const data = JSON.parse(e.data);
       log(JSON.stringify(data));

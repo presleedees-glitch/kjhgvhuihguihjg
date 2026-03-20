@@ -1,11 +1,10 @@
 {
-  "name":"kahoot-bridge",
-  "version":"1.0.0",
-  "scripts":{"start":"node server.js"},
+  "name": "kahoot-bridge",
+  "version": "1.0.0",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": "18.x" },
   "dependencies": {
-  "express": "^4.18.2",
-  "ws": "^8.13.0",
-  "kahoot.js-updated": "git+https://github.com/theusaf/kahoot.js-updated.git"
-}
-
+    "express": "^4.18.2",
+    "ws": "^8.13.0"
   }
+}
