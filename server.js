@@ -1,8 +1,7 @@
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
-// Kahoot client temporarily disabled to allow server to start
-// const Kahoot = require('kahoot.js-updated');
+// Kahoot client disabled for testing
 
 const app = express();
 app.use(express.static('.'));
@@ -16,7 +15,6 @@ wss.on('connection', ws => {
       const msg = JSON.parse(raw);
 
       if (msg.action === 'join') {
-        // Kahoot client disabled for now
         ws.send(JSON.stringify({ event: 'info', message: 'Kahoot client disabled for testing' }));
       }
 
@@ -35,4 +33,5 @@ wss.on('connection', ws => {
   ws.on('close', () => {});
 });
 
-server.listen(3000, () => console.log('Server listening on http://localhost:3000'));
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Server listening on http://localhost:${PORT}`));
