@@ -1,13 +1,14 @@
-<!-- public/widget.html -->
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8"/>
   <title>Matery Widget</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <style>
     body{font-family:Arial;margin:0}
-    #widget{position:fixed;right:20px;bottom:20px;width:320px;border:1px solid #ddd;border-radius:8px;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,.12)}
-    #header{background:#0b74de;color:#fff;padding:10px} #messages{height:300px;overflow:auto;padding:10px;background:#fafafa}
+    #widget{position:fixed;right:20px;bottom:20px;width:320px;border:1px solid #ddd;border-radius:8px;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,.12);background:#fff}
+    #header{background:#0b74de;color:#fff;padding:10px;font-weight:600}
+    #messages{height:300px;overflow:auto;padding:10px;background:#fafafa}
     .msg{margin:8px 0;padding:8px;border-radius:6px;max-width:80%}
     .user{background:#0b74de;color:#fff;margin-left:auto}
     .bot{background:#fff;border:1px solid #eee}
@@ -15,34 +16,47 @@
     #composer{display:flex;padding:8px;border-top:1px solid #eee}
     #composer input{flex:1;padding:8px;border:1px solid #ddd;border-radius:6px}
     #composer button{margin-left:8px;padding:8px 12px}
+    #status{font-size:12px;color:#666;padding:6px 10px}
   </style>
 </head>
 <body>
-<div id="widget">
+<div id="widget" role="region" aria-label="Chat widget">
   <div id="header">Matery AutoAnswer</div>
-  <div id="messages"></div>
+  <div id="messages" aria-live="polite"></div>
+  <div id="status"></div>
   <div id="composer">
-    <input id="input" placeholder="Type a message"/>
+    <input id="input" placeholder="Type a message" aria-label="Message input"/>
     <button id="send">Send</button>
   </div>
 </div>
 
 <script>
-  const WS = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
-  const socket = new WebSocket(WS);
+  const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+  const socket = new WebSocket(WS_URL);
   let conversationId = null;
-  socket.onopen = () => appendBot('<em>Connected</em>');
+  const statusEl = document.getElementById('status');
+
+  socket.onopen = () => { appendBot('<em>Connected</em>'); statusEl.innerText = 'Connected'; };
+  socket.onclose = () => { statusEl.innerText = 'Disconnected'; };
+  socket.onerror = () => { statusEl.innerText = 'Connection error'; };
+
   socket.onmessage = e => {
-    const p = JSON.parse(e.data);
-    if (p.type === 'action') {
-      conversationId = p.conversationId || conversationId;
-      if (p.action.type === 'reply') {
-        appendBot(p.action.html);
-        renderQuickReplies(p.action.quickReplies || []);
-      } else if (p.action.type === 'escalate') {
-        appendBot('<strong>Escalation requested.</strong>');
-        renderEscalation();
+    try {
+      const p = JSON.parse(e.data);
+      if (p.type === 'action') {
+        conversationId = p.conversationId || conversationId;
+        if (p.action.type === 'reply') {
+          appendBot(p.action.html);
+          renderQuickReplies(p.action.quickReplies || []);
+        } else if (p.action.type === 'escalate') {
+          appendBot('<strong>Escalation requested.</strong>');
+          renderEscalation();
+        }
+      } else if (p.type === 'error') {
+        appendBot('<em>Server error: ' + (p.message || 'unknown') + '</em>');
       }
+    } catch (err) {
+      console.error('parse message', err);
     }
   };
 
@@ -53,7 +67,11 @@
     const text = document.getElementById('input').value.trim();
     if (!text) return;
     appendUser(text);
-    socket.send(JSON.stringify({ type:'user_message', text, conversationId, name: 'Visitor' }));
+    try {
+      socket.send(JSON.stringify({ type:'user_message', text, conversationId, name: 'Visitor' }));
+    } catch (e) {
+      appendBot('<em>Unable to send message — connection closed.</em>');
+    }
     document.getElementById('input').value = '';
     clearQuickReplies();
   }

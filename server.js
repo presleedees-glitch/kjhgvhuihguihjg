@@ -12,48 +12,62 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-/* --- Simple JSON DB (file persistence) --- */
-const dbFile = path.join(__dirname, 'db.json');
-if (!fs.existsSync(dbFile)) fs.writeFileSync(dbFile, JSON.stringify({ conversations: [], templates: [] }));
-const adapter = new JSONFile(dbFile);
+const DB_FILE = process.env.DB_FILE || path.join(__dirname, 'db.json');
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+function ensureDbFile(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) {
+      fs.writeFileSync(filePath, JSON.stringify({ conversations: [], templates: [] }, null, 2), { flag: 'w' });
+    }
+    // quick permission check
+    fs.accessSync(filePath, fs.constants.R_OK | fs.constants.W_OK);
+  } catch (err) {
+    console.error('DB file error:', err);
+    // fallback to temp file to avoid crash on platforms with restricted FS
+    const tmp = path.join(require('os').tmpdir(), `matery-db-${Date.now()}.json`);
+    fs.writeFileSync(tmp, JSON.stringify({ conversations: [], templates: [] }, null, 2));
+    return tmp;
+  }
+  return filePath;
+}
+
+const resolvedDbFile = ensureDbFile(DB_FILE);
+const adapter = new JSONFile(resolvedDbFile);
 const db = new Low(adapter);
 
 async function initDb(){
   await db.read();
   db.data = db.data || { conversations: [], templates: [] };
-  // seed templates if empty
-  if (!db.data.templates.length) {
-    db.data.templates.push(
+  if (!Array.isArray(db.data.templates) || db.data.templates.length === 0) {
+    db.data.templates = [
       { id: 'tpl-pricing-a', variant: 'A', body: 'Hi {{name}}, pricing starts at ${{price}}/mo. Quick compare?' },
       { id: 'tpl-pricing-b', variant: 'B', body: 'Hey {{name}} — our plans start at ${{price}}/mo. Many customers pick Pro for X.' }
-    );
+    ];
     await db.write();
   }
 }
-initDb();
+initDb().catch(e => console.error('initDb error', e));
 
-/* --- Static widget --- */
-app.use(express.static(path.join(__dirname, 'public')));
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'widget.html')));
+app.use(express.static(PUBLIC_DIR));
+app.get('/', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'widget.html')));
 
-/* --- Minimal rule engine --- */
 function classifyIntent(text){
-  const t = text.toLowerCase();
+  const t = (text || '').toLowerCase();
   if (t.includes('price') || t.includes('pricing') || t.includes('cost')) return { intent: 'pricing', confidence: 0.9 };
   if (t.includes('demo') || t.includes('trial')) return { intent: 'demo', confidence: 0.85 };
   return { intent: 'unknown', confidence: 0.4 };
 }
 
 function pickTemplate(intent){
-  // A/B: alternate by random
   if (intent === 'pricing') {
-    const variants = db.data.templates.filter(t => t.id.startsWith('tpl-pricing'));
+    const variants = (db.data.templates || []).filter(t => t.id && t.id.startsWith('tpl-pricing'));
+    if (!variants.length) return { body: 'Pricing info coming soon.' };
     return variants[Math.random() < 0.5 ? 0 : 1];
   }
   return { body: "Sorry, I didn't get that. Would you like a human?" };
 }
 
-/* --- WebSocket handling --- */
 wss.on('connection', ws => {
   ws.id = nanoid();
   ws.on('message', async raw => {
@@ -62,9 +76,8 @@ wss.on('connection', ws => {
       if (msg.type === 'user_message') {
         await db.read();
         const convId = msg.conversationId || nanoid();
-        // store message
         db.data.conversations.push({
-          id: convId,
+          conversationId: convId,
           messageId: nanoid(),
           sender: 'user',
           text: msg.text,
@@ -72,23 +85,21 @@ wss.on('connection', ws => {
         });
         await db.write();
 
-        // classify and decide
         const cls = classifyIntent(msg.text);
         let action = { type: 'reply', html: '<p>Let me check...</p>' };
 
         if (cls.intent === 'pricing' && cls.confidence > 0.6) {
           const tpl = pickTemplate('pricing');
-          const html = mustache.render(tpl.body, { name: msg.name || 'there', price: '29' });
+          const html = mustache.render(tpl.body, { name: msg.name || 'there', price: process.env.DEFAULT_PRICE || '29' });
           action = { type: 'reply', html, quickReplies: ['Compare', 'Demo', 'Talk to human'], variant: tpl.variant };
-        } else if (msg.text.toLowerCase().includes('human') || cls.confidence < 0.5) {
+        } else if ((msg.text || '').toLowerCase().includes('human') || cls.confidence < 0.5) {
           action = { type: 'escalate', reason: 'low_confidence_or_user_request' };
         } else {
           action = { type: 'reply', html: '<p>Thanks — can you say more?</p>', quickReplies: ['Pricing', 'Demo', 'Human'] };
         }
 
-        // persist bot action
         db.data.conversations.push({
-          id: convId,
+          conversationId: convId,
           messageId: nanoid(),
           sender: 'bot',
           text: action.html,
@@ -97,20 +108,25 @@ wss.on('connection', ws => {
         });
         await db.write();
 
-        // send back to client
         ws.send(JSON.stringify({ type: 'action', conversationId: convId, action }));
       }
     } catch (e) {
-      console.error(e);
+      console.error('ws message error', e);
+      try { ws.send(JSON.stringify({ type: 'error', message: 'Server error processing message' })); } catch {}
     }
   });
+
+  ws.on('error', err => console.error('ws error', err));
 });
 
-/* --- Health and simple admin endpoints --- */
 app.get('/admin/conversations', async (req, res) => {
-  await db.read();
-  res.json(db.data.conversations.slice(-200));
+  try {
+    await db.read();
+    res.json((db.data.conversations || []).slice(-200));
+  } catch (e) {
+    res.status(500).json({ error: 'failed to read conversations' });
+  }
 });
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log('listening on', PORT));
+const PORT = parseInt(process.env.PORT, 10) || 3000;
+server.listen(PORT, '0.0.0.0', () => console.log(`listening on ${PORT}`));
