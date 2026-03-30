@@ -7,6 +7,7 @@ const { Low, JSONFile } = require('lowdb');
 const { nanoid } = require('nanoid');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 const app = express();
 const server = http.createServer(app);
@@ -20,16 +21,13 @@ function ensureDbFile(filePath) {
     if (!fs.existsSync(filePath)) {
       fs.writeFileSync(filePath, JSON.stringify({ conversations: [], templates: [] }, null, 2), { flag: 'w' });
     }
-    // quick permission check
     fs.accessSync(filePath, fs.constants.R_OK | fs.constants.W_OK);
+    return filePath;
   } catch (err) {
-    console.error('DB file error:', err);
-    // fallback to temp file to avoid crash on platforms with restricted FS
-    const tmp = path.join(require('os').tmpdir(), `matery-db-${Date.now()}.json`);
+    const tmp = path.join(os.tmpdir(), `matery-db-${Date.now()}.json`);
     fs.writeFileSync(tmp, JSON.stringify({ conversations: [], templates: [] }, null, 2));
     return tmp;
   }
-  return filePath;
 }
 
 const resolvedDbFile = ensureDbFile(DB_FILE);
