@@ -1,0 +1,89 @@
+<!-- public/widget.html -->
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Matery Widget</title>
+  <style>
+    body{font-family:Arial;margin:0}
+    #widget{position:fixed;right:20px;bottom:20px;width:320px;border:1px solid #ddd;border-radius:8px;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,.12)}
+    #header{background:#0b74de;color:#fff;padding:10px} #messages{height:300px;overflow:auto;padding:10px;background:#fafafa}
+    .msg{margin:8px 0;padding:8px;border-radius:6px;max-width:80%}
+    .user{background:#0b74de;color:#fff;margin-left:auto}
+    .bot{background:#fff;border:1px solid #eee}
+    .quick{display:inline-block;margin:6px 6px 0 0;padding:6px 10px;background:#eee;border-radius:16px;cursor:pointer}
+    #composer{display:flex;padding:8px;border-top:1px solid #eee}
+    #composer input{flex:1;padding:8px;border:1px solid #ddd;border-radius:6px}
+    #composer button{margin-left:8px;padding:8px 12px}
+  </style>
+</head>
+<body>
+<div id="widget">
+  <div id="header">Matery AutoAnswer</div>
+  <div id="messages"></div>
+  <div id="composer">
+    <input id="input" placeholder="Type a message"/>
+    <button id="send">Send</button>
+  </div>
+</div>
+
+<script>
+  const WS = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+  const socket = new WebSocket(WS);
+  let conversationId = null;
+  socket.onopen = () => appendBot('<em>Connected</em>');
+  socket.onmessage = e => {
+    const p = JSON.parse(e.data);
+    if (p.type === 'action') {
+      conversationId = p.conversationId || conversationId;
+      if (p.action.type === 'reply') {
+        appendBot(p.action.html);
+        renderQuickReplies(p.action.quickReplies || []);
+      } else if (p.action.type === 'escalate') {
+        appendBot('<strong>Escalation requested.</strong>');
+        renderEscalation();
+      }
+    }
+  };
+
+  document.getElementById('send').onclick = send;
+  document.getElementById('input').onkeydown = e => { if (e.key === 'Enter') send(); };
+
+  function send(){
+    const text = document.getElementById('input').value.trim();
+    if (!text) return;
+    appendUser(text);
+    socket.send(JSON.stringify({ type:'user_message', text, conversationId, name: 'Visitor' }));
+    document.getElementById('input').value = '';
+    clearQuickReplies();
+  }
+
+  function appendUser(text){
+    const d = document.createElement('div'); d.className='msg user'; d.innerText = text;
+    document.getElementById('messages').appendChild(d); scrollBottom();
+  }
+  function appendBot(html){
+    const d = document.createElement('div'); d.className='msg bot'; d.innerHTML = html;
+    document.getElementById('messages').appendChild(d); scrollBottom();
+  }
+  function renderQuickReplies(list){
+    clearQuickReplies();
+    if (!list || !list.length) return;
+    const cont = document.createElement('div'); cont.id='quick';
+    list.forEach(q => {
+      const b = document.createElement('span'); b.className='quick'; b.innerText=q;
+      b.onclick = ()=> { document.getElementById('input').value = q; send(); };
+      cont.appendChild(b);
+    });
+    document.getElementById('messages').appendChild(cont); scrollBottom();
+  }
+  function clearQuickReplies(){ const q=document.getElementById('quick'); if(q) q.remove(); }
+  function renderEscalation(){
+    const btn = document.createElement('button'); btn.innerText='Request human now';
+    btn.onclick = ()=> { appendBot('<em>Human requested — an agent will join shortly.</em>'); };
+    document.getElementById('messages').appendChild(btn); scrollBottom();
+  }
+  function scrollBottom(){ const m=document.getElementById('messages'); m.scrollTop = m.scrollHeight; }
+</script>
+</body>
+</html>
