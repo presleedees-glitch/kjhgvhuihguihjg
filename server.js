@@ -3,11 +3,11 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const mustache = require('mustache');
-const { nanoid } = require('nanoid');
 const path = require('path');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 
 const app = express();
 const server = http.createServer(app);
@@ -16,12 +16,19 @@ const wss = new WebSocket.Server({ server });
 const DB_FILE = process.env.DB_FILE || path.join(__dirname, 'db.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
+function uuid() {
+  if (crypto && crypto.randomUUID) return crypto.randomUUID();
+  // fallback
+  return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+    (c ^ crypto.randomBytes(1)[0] & 15 >> c / 4).toString(16)
+  );
+}
+
 async function ensureDbFile(filePath) {
   try {
     if (!fsSync.existsSync(filePath)) {
       await fs.writeFile(filePath, JSON.stringify({ conversations: [], templates: [] }, null, 2), 'utf8');
     }
-    // quick permission check
     fsSync.accessSync(filePath, fsSync.constants.R_OK | fsSync.constants.W_OK);
     return filePath;
   } catch (err) {
@@ -44,7 +51,7 @@ async function writeDb(data) {
   await fs.rename(tmp, file);
 }
 
-/* --- DB init --- */
+/* DB init */
 (async () => {
   const db = await readDb();
   db.conversations = db.conversations || [];
@@ -58,11 +65,11 @@ async function writeDb(data) {
   }
 })().catch(e => console.error('DB init error', e));
 
-/* --- Serve widget --- */
+/* Serve widget */
 app.use(express.static(PUBLIC_DIR));
 app.get('/', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'widget.html')));
 
-/* --- Simple intent and template logic --- */
+/* Intent and template logic */
 function classifyIntent(text){
   const t = (text || '').toLowerCase();
   if (t.includes('price') || t.includes('pricing') || t.includes('cost')) return { intent: 'pricing', confidence: 0.9 };
@@ -80,18 +87,18 @@ async function pickTemplate(intent){
   return { body: "Sorry, I didn't get that. Would you like a human?" };
 }
 
-/* --- WebSocket handling --- */
+/* WebSocket handling */
 wss.on('connection', ws => {
-  ws.id = nanoid();
+  ws.id = uuid();
   ws.on('message', async raw => {
     try {
       const msg = JSON.parse(raw);
       if (msg.type === 'user_message') {
         const db = await readDb();
-        const convId = msg.conversationId || nanoid();
+        const convId = msg.conversationId || uuid();
         db.conversations.push({
           conversationId: convId,
-          messageId: nanoid(),
+          messageId: uuid(),
           sender: 'user',
           text: msg.text,
           createdAt: Date.now()
@@ -114,7 +121,7 @@ wss.on('connection', ws => {
         const db2 = await readDb();
         db2.conversations.push({
           conversationId: convId,
-          messageId: nanoid(),
+          messageId: uuid(),
           sender: 'bot',
           text: action.html,
           meta: { actionType: action.type, variant: action.variant || null },
@@ -133,7 +140,7 @@ wss.on('connection', ws => {
   ws.on('error', err => console.error('ws error', err));
 });
 
-/* --- Admin endpoint --- */
+/* Admin endpoint */
 app.get('/admin/conversations', async (req, res) => {
   try {
     const db = await readDb();
