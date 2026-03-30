@@ -3,10 +3,10 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const mustache = require('mustache');
-const { Low, JSONFile } = require('lowdb');
 const { nanoid } = require('nanoid');
 const path = require('path');
-const fs = require('fs');
+const fs = require('fs').promises;
+const fsSync = require('fs');
 const os = require('os');
 
 const app = express();
@@ -16,40 +16,53 @@ const wss = new WebSocket.Server({ server });
 const DB_FILE = process.env.DB_FILE || path.join(__dirname, 'db.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-function ensureDbFile(filePath) {
+async function ensureDbFile(filePath) {
   try {
-    if (!fs.existsSync(filePath)) {
-      fs.writeFileSync(filePath, JSON.stringify({ conversations: [], templates: [] }, null, 2), { flag: 'w' });
+    if (!fsSync.existsSync(filePath)) {
+      await fs.writeFile(filePath, JSON.stringify({ conversations: [], templates: [] }, null, 2), 'utf8');
     }
-    fs.accessSync(filePath, fs.constants.R_OK | fs.constants.W_OK);
+    // quick permission check
+    fsSync.accessSync(filePath, fsSync.constants.R_OK | fsSync.constants.W_OK);
     return filePath;
   } catch (err) {
     const tmp = path.join(os.tmpdir(), `matery-db-${Date.now()}.json`);
-    fs.writeFileSync(tmp, JSON.stringify({ conversations: [], templates: [] }, null, 2));
+    await fs.writeFile(tmp, JSON.stringify({ conversations: [], templates: [] }, null, 2), 'utf8');
     return tmp;
   }
 }
 
-const resolvedDbFile = ensureDbFile(DB_FILE);
-const adapter = new JSONFile(resolvedDbFile);
-const db = new Low(adapter);
+let resolvedDbFile;
+async function readDb() {
+  const file = resolvedDbFile || (resolvedDbFile = await ensureDbFile(DB_FILE));
+  const raw = await fs.readFile(file, 'utf8');
+  try { return JSON.parse(raw || '{}'); } catch { return { conversations: [], templates: [] }; }
+}
+async function writeDb(data) {
+  const file = resolvedDbFile || (resolvedDbFile = await ensureDbFile(DB_FILE));
+  const tmp = file + '.tmp';
+  await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
+  await fs.rename(tmp, file);
+}
 
-async function initDb(){
-  await db.read();
-  db.data = db.data || { conversations: [], templates: [] };
-  if (!Array.isArray(db.data.templates) || db.data.templates.length === 0) {
-    db.data.templates = [
+/* --- DB init --- */
+(async () => {
+  const db = await readDb();
+  db.conversations = db.conversations || [];
+  db.templates = db.templates || [];
+  if (!db.templates.length) {
+    db.templates.push(
       { id: 'tpl-pricing-a', variant: 'A', body: 'Hi {{name}}, pricing starts at ${{price}}/mo. Quick compare?' },
       { id: 'tpl-pricing-b', variant: 'B', body: 'Hey {{name}} — our plans start at ${{price}}/mo. Many customers pick Pro for X.' }
-    ];
-    await db.write();
+    );
+    await writeDb(db);
   }
-}
-initDb().catch(e => console.error('initDb error', e));
+})().catch(e => console.error('DB init error', e));
 
+/* --- Serve widget --- */
 app.use(express.static(PUBLIC_DIR));
 app.get('/', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'widget.html')));
 
+/* --- Simple intent and template logic --- */
 function classifyIntent(text){
   const t = (text || '').toLowerCase();
   if (t.includes('price') || t.includes('pricing') || t.includes('cost')) return { intent: 'pricing', confidence: 0.9 };
@@ -57,37 +70,39 @@ function classifyIntent(text){
   return { intent: 'unknown', confidence: 0.4 };
 }
 
-function pickTemplate(intent){
+async function pickTemplate(intent){
+  const db = await readDb();
   if (intent === 'pricing') {
-    const variants = (db.data.templates || []).filter(t => t.id && t.id.startsWith('tpl-pricing'));
+    const variants = (db.templates || []).filter(t => t.id && t.id.startsWith('tpl-pricing'));
     if (!variants.length) return { body: 'Pricing info coming soon.' };
     return variants[Math.random() < 0.5 ? 0 : 1];
   }
   return { body: "Sorry, I didn't get that. Would you like a human?" };
 }
 
+/* --- WebSocket handling --- */
 wss.on('connection', ws => {
   ws.id = nanoid();
   ws.on('message', async raw => {
     try {
       const msg = JSON.parse(raw);
       if (msg.type === 'user_message') {
-        await db.read();
+        const db = await readDb();
         const convId = msg.conversationId || nanoid();
-        db.data.conversations.push({
+        db.conversations.push({
           conversationId: convId,
           messageId: nanoid(),
           sender: 'user',
           text: msg.text,
           createdAt: Date.now()
         });
-        await db.write();
+        await writeDb(db);
 
         const cls = classifyIntent(msg.text);
         let action = { type: 'reply', html: '<p>Let me check...</p>' };
 
         if (cls.intent === 'pricing' && cls.confidence > 0.6) {
-          const tpl = pickTemplate('pricing');
+          const tpl = await pickTemplate('pricing');
           const html = mustache.render(tpl.body, { name: msg.name || 'there', price: process.env.DEFAULT_PRICE || '29' });
           action = { type: 'reply', html, quickReplies: ['Compare', 'Demo', 'Talk to human'], variant: tpl.variant };
         } else if ((msg.text || '').toLowerCase().includes('human') || cls.confidence < 0.5) {
@@ -96,7 +111,8 @@ wss.on('connection', ws => {
           action = { type: 'reply', html: '<p>Thanks — can you say more?</p>', quickReplies: ['Pricing', 'Demo', 'Human'] };
         }
 
-        db.data.conversations.push({
+        const db2 = await readDb();
+        db2.conversations.push({
           conversationId: convId,
           messageId: nanoid(),
           sender: 'bot',
@@ -104,7 +120,7 @@ wss.on('connection', ws => {
           meta: { actionType: action.type, variant: action.variant || null },
           createdAt: Date.now()
         });
-        await db.write();
+        await writeDb(db2);
 
         ws.send(JSON.stringify({ type: 'action', conversationId: convId, action }));
       }
@@ -117,10 +133,11 @@ wss.on('connection', ws => {
   ws.on('error', err => console.error('ws error', err));
 });
 
+/* --- Admin endpoint --- */
 app.get('/admin/conversations', async (req, res) => {
   try {
-    await db.read();
-    res.json((db.data.conversations || []).slice(-200));
+    const db = await readDb();
+    res.json((db.conversations || []).slice(-200));
   } catch (e) {
     res.status(500).json({ error: 'failed to read conversations' });
   }
